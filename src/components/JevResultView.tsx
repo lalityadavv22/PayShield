@@ -72,6 +72,7 @@ export const JevResultView: React.FC<JevResultViewProps> = ({ report }) => {
   const hasEditingConcern = redFlags.some((flag) => /edit|artifact|patch|photoshop|canva|compression/i.test(flag));
   const hasSpoofConcern = redFlags.some((flag) => /spoof|fakepay|fake app|fake-payment|template|prank/i.test(flag));
   const unknownScan = isSuspicious && !hasReference && !hasDate;
+  const usesFallbackEngine = report.metadataInfo?.visionEngine === 'heuristics';
 
   const rules: RuleCheck[] = [
     {
@@ -162,6 +163,13 @@ export const JevResultView: React.FC<JevResultViewProps> = ({ report }) => {
               <p>{recommendation}</p>
             </div>
           </div>
+
+          {usesFallbackEngine && (
+            <p className="engine-note">
+              Detailed image analysis was unavailable for this scan, so only the built-in checks were used.
+              Treat this result as a rough signal and confirm the payment in your bank app.
+            </p>
+          )}
         </section>
       </ScrollReveal>
 
