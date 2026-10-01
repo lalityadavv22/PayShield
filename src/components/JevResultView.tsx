@@ -1,320 +1,264 @@
-import React, { useState, useEffect } from 'react';
-import { CheckCircle2, AlertOctagon, AlertTriangle, Cpu, Building2, Search, Check, X, Shield, ArrowRight } from 'lucide-react';
-import { AnalysisReport } from '../types';
+import React from 'react';
+import { AlertTriangle, Check, CheckCircle2, ShieldCheck, X } from 'lucide-react';
+import { AnalysisReport, PipelineStepResult } from '../types';
+import { ScrollReveal } from './ScrollReveal';
 
 interface JevResultViewProps {
   report: AnalysisReport;
 }
 
-export const JevResultView: React.FC<JevResultViewProps> = ({ report }) => {
-  const [searchUtr, setSearchUtr] = useState<string>(report.extracted.txnId || '');
-  const [bankResult, setBankResult] = useState<{
-    checked: boolean;
-    found: boolean;
-    message: string;
-  } | null>(null);
-  const [isCheckingBank, setIsCheckingBank] = useState<boolean>(false);
+type RuleStatus = 'passed' | 'warning' | 'failed';
 
+interface RuleCheck {
+  code: string;
+  name: string;
+  detail: string;
+  status: RuleStatus;
+}
+
+const containsHindi = (text: string) => /[\u0900-\u097F]/u.test(text);
+const safeCopy = (text: string | undefined, fallback: string) =>
+  text && !containsHindi(text) ? text : fallback;
+
+const ruleStatusLabel: Record<RuleStatus, string> = {
+  passed: 'Clear',
+  warning: 'Review',
+  failed: 'Flagged',
+};
+
+const pipelineStatus = (step: PipelineStepResult) => {
+  if (step.status === 'passed') return 'passed';
+  if (step.status === 'failed') return 'failed';
+  return 'warning';
+};
+
+export const JevResultView: React.FC<JevResultViewProps> = ({ report }) => {
   const isFake = report.verdict === 'FAKE';
   const isSuspicious = report.verdict === 'SUSPICIOUS';
-  const isGenuine = report.verdict === 'GENUINE';
+  const verdictTone = isFake ? 'risk' : isSuspicious ? 'caution' : 'safe';
+  const verdictLabel = isFake ? 'Likely altered' : isSuspicious ? 'Needs review' : 'Looks consistent';
+  const defaultTitle = isFake
+    ? 'This receipt looks altered'
+    : isSuspicious
+      ? 'We couldn’t verify this receipt'
+      : 'No obvious edits found';
+  const verdictTitle = safeCopy(report.verdictTitle, defaultTitle);
+  const defaultSummary = isFake
+    ? 'This screenshot raises concerns. Check your bank app before handing anything over.'
+    : isSuspicious
+      ? 'We couldn’t read the payment details. Check your bank app to confirm whether the money arrived.'
+      : 'No obvious edits were found. Confirm the payment in your bank app.';
+  const summary = safeCopy(report.summary, defaultSummary);
+  const defaultRecommendation = isFake
+    ? 'Wait until the money appears in your bank app before handing anything over.'
+    : 'A screenshot alone cannot confirm that the money arrived. Check your bank app or statement.';
+  const recommendation = safeCopy(report.recommendation, defaultRecommendation);
+  const verdictIcon = isFake
+    ? <AlertTriangle aria-hidden="true" />
+    : isSuspicious
+      ? <AlertTriangle aria-hidden="true" />
+      : <CheckCircle2 aria-hidden="true" />;
+  const extracted = report.extracted;
+  const redFlags = (report.redFlags || []).filter((flag) => !containsHindi(flag));
+  const greenFlags = (report.greenFlags || []).filter((flag) => !containsHindi(flag));
+  const pipelineSteps = (report.pipelineSteps || []).filter((step) => !containsHindi(step.name || ''));
+  const score = Number.isFinite(report.overallScore) ? Math.max(0, Math.min(100, report.overallScore)) : 0;
+  const scoreStyle = { '--score': `${score}%` } as React.CSSProperties;
 
-  useEffect(() => {
-    setSearchUtr(report.extracted.txnId || '');
-    setBankResult(null);
-  }, [report.extracted.txnId]);
+  const hasReference = Boolean(extracted?.txnId && !containsHindi(extracted.txnId));
+  const hasDate = Boolean(extracted?.dateTime && extracted.dateTime !== 'Not extracted' && !containsHindi(extracted.dateTime));
+  const isDuplicate = Boolean(report.metadataInfo?.isDuplicateScreenshot || redFlags.some((flag) => /duplicate|already checked|re-used|reused/i.test(flag)));
+  const hasVisualConcern = redFlags.some((flag) => /font|typography|layout|checkmark|tick mark/i.test(flag));
+  const hasEditingConcern = redFlags.some((flag) => /edit|artifact|patch|photoshop|canva|compression/i.test(flag));
+  const hasSpoofConcern = redFlags.some((flag) => /spoof|fakepay|fake app|fake-payment|template|prank/i.test(flag));
+  const unknownScan = isSuspicious && !hasReference && !hasDate;
 
-  const handleBankCheck = async () => {
-    if (!searchUtr) return;
-    setIsCheckingBank(true);
-    try {
-      const res = await fetch('/api/reconcile-bank', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          utrNumber: searchUtr.trim(),
-          amount: report.extracted.amount,
-        }),
-      });
-      const data = await res.json();
-      setBankResult({
-        checked: true,
-        found: data.found,
-        message: data.message,
-      });
-    } catch {
-      setBankResult({
-        checked: true,
-        found: false,
-        message: 'Could not connect to bank gateway.',
-      });
-    } finally {
-      setIsCheckingBank(false);
-    }
-  };
-
-  // Jev AI Rules evaluated dynamically
-  const jevRules = [
+  const rules: RuleCheck[] = [
     {
       code: 'JEV-R101',
-      name: '12-Digit NPCI UTR Standard',
-      desc: 'Checks 12-digit numeric length and gateway character structure.',
-      passed: report.extracted.isTxnIdStandardLength,
+      name: 'Payment reference',
+      detail: !hasReference
+        ? 'No payment reference could be read.'
+        : extracted.isTxnIdStandardLength
+          ? 'The reference follows the expected format.'
+          : 'The reference may be incomplete or unusual.',
+      status: !hasReference ? 'warning' : extracted.isTxnIdStandardLength ? 'passed' : 'failed',
     },
     {
       code: 'JEV-R204',
-      name: 'Typography & Layout Alignment',
-      desc: 'Evaluates Google Sans / Roboto font weight, alignment, and kerning.',
-      passed: !report.redFlags.some((f) => f.toLowerCase().includes('font')),
+      name: 'Layout and text',
+      detail: hasVisualConcern
+        ? 'A visual mismatch was noted in the screenshot.'
+        : unknownScan ? 'There was not enough detail to compare the layout.' : 'No layout mismatch was reported.',
+      status: hasVisualConcern ? 'failed' : unknownScan ? 'warning' : 'passed',
     },
     {
       code: 'JEV-R302',
-      name: 'Compression Uniformity & Canva Tags',
-      desc: 'Detects isolated patch compression around amount text.',
-      passed: !report.redFlags.some((f) => f.toLowerCase().includes('compression') || f.toLowerCase().includes('canva')),
+      name: 'Editing signs',
+      detail: hasEditingConcern
+        ? 'Possible editing marks were found.'
+        : unknownScan ? 'There was not enough detail to check for editing.' : 'No editing marks were reported.',
+      status: hasEditingConcern ? 'failed' : unknownScan ? 'warning' : 'passed',
     },
     {
       code: 'JEV-R408',
-      name: 'Timestamp & Calendar Validity',
-      desc: 'Flags impossible future dates and non-standard timestamp formats.',
-      passed: !report.extracted.isFutureDate,
+      name: 'Date and time',
+      detail: extracted?.isFutureDate
+        ? 'The receipt date appears to be in the future.'
+        : hasDate ? 'The date does not appear to be in the future.' : 'No date could be checked.',
+      status: extracted?.isFutureDate ? 'failed' : hasDate ? 'passed' : 'warning',
     },
     {
       code: 'JEV-R512',
-      name: 'Spoof App Template Signatures',
-      desc: 'Screens for FakePay, SpoofPay, and prank app template artifacts.',
-      passed: !report.redFlags.some((f) => f.toLowerCase().includes('spoof') || f.toLowerCase().includes('fakepay')),
+      name: 'Fake-app signals',
+      detail: hasSpoofConcern
+        ? 'A known fake-payment pattern was reported.'
+        : unknownScan ? 'There was not enough detail to check the app.' : 'No fake-app pattern was reported.',
+      status: hasSpoofConcern ? 'failed' : unknownScan ? 'warning' : 'passed',
     },
     {
       code: 'JEV-R601',
-      name: 'Replay / Duplicate Cache Guard',
-      desc: 'Identifies previously seen receipt hashes and duplicate UTR reuse.',
-      passed: !report.redFlags.some((f) => f.toLowerCase().includes('duplicate')),
+      name: 'Repeat screenshot',
+      detail: isDuplicate ? 'This screenshot was already checked in this session.' : 'No repeat screenshot was found in this session.',
+      status: isDuplicate ? 'failed' : 'passed',
     },
   ];
 
+  const metrics = [
+    { label: 'Amount', value: extracted?.amount && extracted.amount !== 'Not extracted' && !containsHindi(extracted.amount) ? extracted.amount : 'Not found', className: 'metric-amount' },
+    { label: 'Payment app', value: extracted?.app === 'Spoof App / Unknown' ? 'Unknown app' : extracted?.app || 'Not found', className: '' },
+    { label: 'UPI reference', value: hasReference ? extracted.txnId : 'Not found', className: 'metric-reference' },
+    { label: 'Date and time', value: hasDate ? extracted.dateTime : 'Not found', className: '' },
+    ...(extracted?.recipientName && !containsHindi(extracted.recipientName) ? [{ label: 'Paid to', value: extracted.recipientName, className: '' }] : []),
+    ...(extracted?.senderName && !containsHindi(extracted.senderName) ? [{ label: 'Paid by', value: extracted.senderName, className: '' }] : []),
+    ...(extracted?.upiId && !containsHindi(extracted.upiId) ? [{ label: 'UPI ID', value: extracted.upiId, className: 'metric-reference' }] : []),
+    ...(extracted?.statusText && extracted.statusText !== 'Unverified' && !containsHindi(extracted.statusText) ? [{ label: 'Receipt status', value: extracted.statusText, className: '' }] : []),
+  ];
+
   return (
-    <div className="w-full max-w-3xl mx-auto space-y-4 animate-in fade-in slide-in-from-bottom-3 duration-300">
-      {/* 1. EdgeDrop-style Verdict Card */}
-      <div
-        className={`rounded-2xl border p-6 sm:p-7 backdrop-blur-xl transition-all ${
-          isFake
-            ? 'bg-rose-950/20 border-rose-500/30'
-            : isSuspicious
-            ? 'bg-amber-950/20 border-amber-500/30'
-            : 'bg-emerald-950/20 border-emerald-500/30'
-        }`}
-      >
-        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-5 pb-5 border-b border-white/[0.08]">
-          <div className="flex items-start gap-4">
-            <div
-              className={`w-12 h-12 rounded-2xl flex items-center justify-center shrink-0 shadow-lg ${
-                isFake
-                  ? 'bg-rose-500/20 text-rose-400 border border-rose-500/30'
-                  : isSuspicious
-                  ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30'
-                  : 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
-              }`}
-            >
-              {isFake ? (
-                <AlertOctagon className="w-6 h-6" />
-              ) : isSuspicious ? (
-                <AlertTriangle className="w-6 h-6" />
-              ) : (
-                <CheckCircle2 className="w-6 h-6" />
-              )}
+    <div className="report-view">
+      <ScrollReveal className="report-reveal" delay={40}>
+        <section className={`verdict-panel verdict-${verdictTone}`} aria-label={`JEV result: ${verdictLabel}`}>
+          <div className="verdict-main">
+            <div className={`verdict-icon verdict-icon-${verdictTone}`}>{verdictIcon}</div>
+            <div className="verdict-copy">
+              <span className={`verdict-tag verdict-tag-${verdictTone}`}>{verdictLabel}</span>
+              <h2>{verdictTitle}</h2>
+              <p>{summary}</p>
             </div>
+            <div className="score-gauge" style={scoreStyle} aria-label={`JEV score ${score} out of 100`}>
+              <div className="score-gauge-inner">
+                <span className="score-label">JEV score</span>
+                <strong>{score}</strong>
+                <span className="score-out-of">/ 100</span>
+              </div>
+            </div>
+          </div>
 
+          <div className="recommendation-row">
+            <span className="recommendation-icon"><ShieldCheck aria-hidden="true" /></span>
             <div>
-              <div className="flex items-center gap-2 mb-1">
-                <span
-                  className={`text-[10px] font-mono font-bold uppercase tracking-wider px-2 py-0.5 rounded-full ${
-                    isFake
-                      ? 'bg-rose-500/20 text-rose-300 border border-rose-500/30'
-                      : isSuspicious
-                      ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
-                      : 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
-                  }`}
-                >
-                  Jev Decision: {report.verdict}
-                </span>
-                <span className="text-[11px] font-mono text-slate-500">• Model v3.8</span>
-              </div>
-
-              <h2 className="text-xl sm:text-2xl font-bold text-white tracking-tight">
-                {report.verdictTitle}
-              </h2>
-
-              <p className="mt-1 text-xs sm:text-sm text-slate-300 leading-relaxed max-w-xl">
-                {report.summary}
-              </p>
+              <strong>What to do next</strong>
+              <p>{recommendation}</p>
             </div>
           </div>
+        </section>
+      </ScrollReveal>
 
-          {/* Jev Trust Score */}
-          <div className="flex sm:flex-col items-center justify-between sm:justify-center p-3.5 sm:p-4 rounded-xl bg-white/[0.03] border border-white/[0.08] w-full sm:w-28 shrink-0 text-center">
-            <span className="text-[10px] font-mono uppercase tracking-wider text-slate-400">
-              Jev Score
-            </span>
-            <div
-              className={`text-3xl font-extrabold font-mono tracking-tight my-0.5 ${
-                isFake ? 'text-rose-400' : isSuspicious ? 'text-amber-400' : 'text-emerald-400'
-              }`}
-            >
-              {report.overallScore}
-            </div>
-            <span className="text-[10px] font-mono text-slate-500">out of 100</span>
-          </div>
-        </div>
-
-        {/* Actionable Advice */}
-        <div className="pt-4 flex items-start gap-2 text-xs text-slate-200">
-          <span className="text-sm">💡</span>
-          <div>
-            <strong className="text-white mr-1.5">Action Advice:</strong>
-            <span>{report.recommendation}</span>
-          </div>
-        </div>
-      </div>
-
-      {/* 2. Extracted Attributes Grid */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
-        <div className="p-3.5 rounded-xl bg-[#0b101d]/60 border border-white/[0.07]">
-          <span className="text-[10px] font-mono uppercase tracking-wider text-slate-500 block mb-1">
-            Claimed Amount
-          </span>
-          <span className="text-base font-bold font-mono text-emerald-400">
-            {report.extracted.amount || 'N/A'}
-          </span>
-        </div>
-
-        <div className="p-3.5 rounded-xl bg-[#0b101d]/60 border border-white/[0.07]">
-          <span className="text-[10px] font-mono uppercase tracking-wider text-slate-500 block mb-1">
-            Payment App
-          </span>
-          <span className="text-xs font-bold text-white truncate block">
-            {report.extracted.app || 'Unknown'}
-          </span>
-        </div>
-
-        <div className="p-3.5 rounded-xl bg-[#0b101d]/60 border border-white/[0.07]">
-          <span className="text-[10px] font-mono uppercase tracking-wider text-slate-500 block mb-1">
-            UPI Ref / UTR
-          </span>
-          <span className="text-xs font-mono font-semibold text-slate-200 break-all block">
-            {report.extracted.txnId || 'Not Found'}
-          </span>
-        </div>
-
-        <div className="p-3.5 rounded-xl bg-[#0b101d]/60 border border-white/[0.07]">
-          <span className="text-[10px] font-mono uppercase tracking-wider text-slate-500 block mb-1">
-            Timestamp
-          </span>
-          <span className="text-xs text-slate-300 truncate block">
-            {report.extracted.dateTime || 'Not visible'}
-          </span>
-        </div>
-      </div>
-
-      {/* 3. Jev AI Rule Evaluation Engine Matrix */}
-      <div className="rounded-2xl border border-white/[0.08] bg-[#0b101d]/60 p-5 space-y-3.5 backdrop-blur-xl">
-        <div className="flex items-center justify-between pb-2 border-b border-white/[0.06]">
-          <div className="flex items-center gap-2">
-            <Cpu className="w-4 h-4 text-emerald-400" />
-            <h3 className="text-xs font-bold uppercase tracking-wider text-white">
-              Jev AI Rule Evaluation Engine
-            </h3>
-          </div>
-          <span className="text-[10px] font-mono text-slate-400">
-            {jevRules.filter((r) => r.passed).length} / {jevRules.length} Rules Passed
-          </span>
-        </div>
-
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-          {jevRules.map((rule) => (
-            <div
-              key={rule.code}
-              className={`p-3 rounded-xl border flex items-start gap-2.5 transition-colors ${
-                rule.passed
-                  ? 'bg-emerald-500/[0.03] border-emerald-500/20'
-                  : 'bg-rose-500/[0.04] border-rose-500/25'
-              }`}
-            >
-              <div
-                className={`w-5 h-5 rounded-md flex items-center justify-center shrink-0 mt-0.5 ${
-                  rule.passed
-                    ? 'bg-emerald-500/20 text-emerald-400'
-                    : 'bg-rose-500/20 text-rose-400'
-                }`}
-              >
-                {rule.passed ? <Check className="w-3 h-3" /> : <X className="w-3 h-3" />}
-              </div>
-
-              <div>
-                <div className="flex items-center gap-2 mb-0.5">
-                  <span className="text-[10px] font-mono font-bold text-slate-400">
-                    {rule.code}
-                  </span>
-                  <span className="text-xs font-semibold text-slate-200">
-                    {rule.name}
-                  </span>
-                </div>
-                <p className="text-[11px] text-slate-400 leading-snug">
-                  {rule.desc}
-                </p>
-              </div>
-            </div>
+      <ScrollReveal className="report-reveal" delay={90}>
+        <div className="report-metrics" aria-label="Details read from the screenshot">
+          {metrics.map((metric) => (
+            <article className={`metric-card ${metric.className}`} key={metric.label}>
+              <span className="metric-label">{metric.label}</span>
+              <strong title={metric.value}>{metric.value}</strong>
+            </article>
           ))}
         </div>
-      </div>
+      </ScrollReveal>
 
-      {/* 4. Bank Ledger Matcher (Real Proof) */}
-      <div className="rounded-2xl border border-cyan-500/20 bg-cyan-950/[0.12] p-5 space-y-3">
-        <div className="flex items-center gap-2">
-          <Building2 className="w-4 h-4 text-cyan-400" />
-          <div>
-            <h4 className="text-xs font-bold uppercase tracking-wider text-white">
-              Bank Ledger Cross-Check (Final Proof)
-            </h4>
-            <p className="text-[11px] text-slate-400">
-              Screenshots can be edited. Only money credited in your bank account is the true proof.
-            </p>
+      <ScrollReveal className="report-detail-grid" delay={140}>
+        <section className="report-card findings-card result-findings">
+          <div className="report-card-heading"><h3>What JEV noticed</h3></div>
+          <div className="finding-list">
+            {redFlags.map((flag, index) => (
+              <div className="finding-item finding-risk" key={`red-${index}`}>
+                <span className="finding-icon"><X aria-hidden="true" /></span>
+                <p>{flag}</p>
+              </div>
+            ))}
+            {greenFlags.map((flag, index) => (
+              <div className="finding-item finding-safe" key={`green-${index}`}>
+                <span className="finding-icon"><Check aria-hidden="true" /></span>
+                <p>{flag}</p>
+              </div>
+            ))}
+            {redFlags.length === 0 && greenFlags.length === 0 && (
+              <p className="finding-empty">No clear warning signs were returned. Confirm the payment in your bank app.</p>
+            )}
           </div>
-        </div>
+        </section>
 
-        <div className="flex flex-col sm:flex-row gap-2">
-          <input
-            type="text"
-            value={searchUtr}
-            onChange={(e) => setSearchUtr(e.target.value)}
-            placeholder="Enter 12-digit UTR (e.g. 427189012345)"
-            className="flex-1 px-3.5 py-2 rounded-xl bg-black/40 border border-white/[0.08] text-xs font-mono text-white placeholder-slate-500 focus:outline-none focus:border-cyan-400"
-          />
-          <button
-            onClick={handleBankCheck}
-            disabled={isCheckingBank || !searchUtr}
-            className="px-4 py-2 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-bold text-xs flex items-center justify-center gap-1.5 transition-all disabled:opacity-50"
-          >
-            <Search className="w-3 h-3" />
-            <span>{isCheckingBank ? 'Checking...' : 'Match in Bank'}</span>
-          </button>
-        </div>
-
-        {bankResult && (
-          <div
-            className={`p-3 rounded-xl border text-xs leading-relaxed animate-in fade-in duration-200 ${
-              bankResult.found
-                ? 'bg-emerald-950/30 border-emerald-500/30 text-emerald-200'
-                : 'bg-rose-950/30 border-rose-500/30 text-rose-200'
-            }`}
-          >
-            <div className="font-bold mb-0.5">
-              {bankResult.found ? '✓ Verified in Bank Account!' : '⚠ Not Recorded in Bank Statement!'}
+        <section className="report-card rules-card">
+          <div className="report-card-heading">
+            <div>
+              <h3>JEV checks</h3>
+              <p>Conditions used for this result</p>
             </div>
-            <div>{bankResult.message}</div>
+            <span className="rule-count">{rules.filter((rule) => rule.status === 'passed').length}<span> / {rules.length} clear</span></span>
           </div>
-        )}
-      </div>
+          <div className="rule-list">
+            {rules.map((rule) => (
+              <div className={`rule-row rule-${rule.status}`} key={rule.code}>
+                <span className="rule-code">{rule.code}</span>
+                <span className="rule-name">{rule.name}<small>{rule.detail}</small></span>
+                <span className={`rule-status-label rule-status-${rule.status}`}>
+                  {rule.status === 'passed' ? <Check aria-hidden="true" /> : <X aria-hidden="true" />}
+                  {ruleStatusLabel[rule.status]}
+                </span>
+              </div>
+            ))}
+          </div>
+        </section>
+      </ScrollReveal>
+
+      <ScrollReveal className="pipeline-reveal" delay={210}>
+        <section className="report-card pipeline-card">
+          <div className="report-card-heading">
+            <div>
+              <h3>JEV tool results</h3>
+              <p>Seven steps behind this receipt check</p>
+            </div>
+            <span className="pipeline-total">{pipelineSteps.length || 0} steps</span>
+          </div>
+          {pipelineSteps.length > 0 ? (
+            <div className="pipeline-grid">
+              {pipelineSteps.map((step) => {
+                const status = pipelineStatus(step);
+                const statusLabel = status === 'passed' ? 'Clear' : status === 'failed' ? 'Flagged' : 'Review';
+                const stepName = safeCopy(step.name, `Step ${step.id}`);
+                const stepDescription = safeCopy(step.details, safeCopy(step.description, 'No extra details for this step.'));
+                const stepScore = Number.isFinite(step.score) ? Math.max(0, Math.min(100, step.score)) : 0;
+                return (
+                  <article className={`pipeline-step pipeline-${status}`} key={step.id}>
+                    <div className="pipeline-step-topline">
+                      <span className="pipeline-number">Step {String(step.id).padStart(2, '0')}</span>
+                      <span className="pipeline-status">{statusLabel}</span>
+                    </div>
+                    <h4>{stepName}</h4>
+                    <p>{stepDescription}</p>
+                    <div className="pipeline-score-row">
+                      <span className="pipeline-score-track"><span style={{ width: `${stepScore}%` }} /></span>
+                      <span>{stepScore}</span>
+                    </div>
+                  </article>
+                );
+              })}
+            </div>
+          ) : (
+            <p className="finding-empty">Step-by-step details were not returned for this scan.</p>
+          )}
+        </section>
+      </ScrollReveal>
     </div>
   );
 };
