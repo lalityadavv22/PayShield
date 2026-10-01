@@ -1,31 +1,39 @@
-import React, { useRef, useState, useEffect } from 'react';
-import { UploadCloud, Zap, Sparkles, ArrowRight, ShieldAlert, CheckCircle2 } from 'lucide-react';
+import React, { useEffect, useRef, useState } from 'react';
+import { ArrowUpRight, ImagePlus, LoaderCircle, ShieldAlert, UploadCloud } from 'lucide-react';
 import { PRESET_RECEIPTS, PresetItem } from '../utils/presets';
 
 interface DropZoneProps {
   onFileSelected: (file: File | string, fileName?: string) => void;
   isScanning: boolean;
+  errorMessage?: string | null;
+  onError?: (message: string) => void;
 }
 
-export const DropZone: React.FC<DropZoneProps> = ({ onFileSelected, isScanning }) => {
+export const DropZone: React.FC<DropZoneProps> = ({
+  onFileSelected,
+  isScanning,
+  errorMessage,
+  onError,
+}) => {
   const [isDragOver, setIsDragOver] = useState(false);
+  const [loadingPreset, setLoadingPreset] = useState<string | null>(null);
+  const [sampleError, setSampleError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Clipboard paste listener (Ctrl+V)
   useEffect(() => {
-    const handlePaste = (e: ClipboardEvent) => {
+    const handlePaste = (event: ClipboardEvent) => {
       if (isScanning) return;
-      const items = e.clipboardData?.items;
+      const items = event.clipboardData?.items;
       if (!items) return;
 
-      for (let i = 0; i < items.length; i++) {
-        if (items[i].type.indexOf('image') !== -1) {
-          const file = items[i].getAsFile();
-          if (file) {
-            onFileSelected(file, 'clipboard-payment.png');
-            break;
-          }
-        }
+      for (const item of Array.from(items)) {
+        if (!item.type.startsWith('image/')) continue;
+        const file = item.getAsFile();
+        if (!file) continue;
+        event.preventDefault();
+        setSampleError(null);
+        onFileSelected(file, 'clipboard-payment.png');
+        return;
       }
     };
 
@@ -33,145 +41,163 @@ export const DropZone: React.FC<DropZoneProps> = ({ onFileSelected, isScanning }
     return () => window.removeEventListener('paste', handlePaste);
   }, [isScanning, onFileSelected]);
 
-  const handleDragOver = (e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setIsDragOver(true);
+  const openFilePicker = () => {
+    if (!isScanning) fileInputRef.current?.click();
   };
 
-  const handleDragLeave = (e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setIsDragOver(false);
-  };
-
-  const handleDrop = (e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
+  const handleDrop = (event: React.DragEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
     setIsDragOver(false);
     if (isScanning) return;
 
-    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-      const file = e.dataTransfer.files[0];
-      if (file.type.startsWith('image/')) {
-        onFileSelected(file);
-      }
+    const file = event.dataTransfer.files?.[0];
+    if (!file) return;
+    if (!file.type.startsWith('image/')) {
+      onError?.('Please choose an image such as PNG, JPG, or WebP.');
+      return;
     }
+    setSampleError(null);
+    onFileSelected(file);
   };
 
   const handlePresetClick = async (preset: PresetItem) => {
-    if (isScanning) return;
-    const dataUrl = await preset.getDataUrl();
-    onFileSelected(dataUrl, `${preset.id}.png`);
+    if (isScanning || loadingPreset) return;
+    setSampleError(null);
+    setLoadingPreset(preset.id);
+    try {
+      const dataUrl = await preset.getDataUrl();
+      onFileSelected(dataUrl, `${preset.id}.png`);
+    } catch {
+      setSampleError('We could not prepare this sample. Please try uploading an image instead.');
+    } finally {
+      setLoadingPreset(null);
+    }
   };
 
+  const visibleError = errorMessage || sampleError;
+
   return (
-    <div className="w-full max-w-3xl mx-auto space-y-4">
-      {/* EdgeDrop-inspired Ultra-Clean Drop Area */}
+    <section className="receipt-dropzone" aria-label="Upload a payment screenshot">
+      <div className="dropzone-heading">
+        <h2>Add a receipt</h2>
+        {isScanning && (
+          <span className="scan-state" role="status">
+            <span className="scan-state-dot" /> Checking…
+          </span>
+        )}
+      </div>
+
       <div
-        onDragOver={handleDragOver}
-        onDragLeave={handleDragLeave}
+        id="upload"
+        className={`dropzone-surface ${isDragOver ? 'is-drag-over' : ''} ${isScanning ? 'is-scanning' : ''}`}
+        onDragEnter={(event) => {
+          event.preventDefault();
+          if (!isScanning) setIsDragOver(true);
+        }}
+        onDragOver={(event) => {
+          event.preventDefault();
+          if (!isScanning) setIsDragOver(true);
+        }}
+        onDragLeave={(event) => {
+          event.preventDefault();
+          if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+            setIsDragOver(false);
+          }
+        }}
         onDrop={handleDrop}
-        onClick={() => !isScanning && fileInputRef.current?.click()}
-        className={`relative overflow-hidden rounded-2xl border transition-all duration-300 cursor-pointer p-8 sm:p-12 text-center ${
-          isDragOver
-            ? 'border-emerald-400/80 bg-emerald-950/20 shadow-2xl shadow-emerald-500/10 scale-[1.008]'
-            : isScanning
-            ? 'border-cyan-400/60 bg-cyan-950/20 shadow-2xl shadow-cyan-500/10'
-            : 'border-white/[0.08] hover:border-white/[0.18] bg-[#0b101d]/60 hover:bg-[#0d1424]/80 shadow-xl backdrop-blur-sm'
-        }`}
+        aria-busy={isScanning}
       >
         <input
-          type="file"
           ref={fileInputRef}
-          className="hidden"
-          accept="image/*"
-          onChange={(e) => {
-            if (e.target.files && e.target.files[0]) {
-              onFileSelected(e.target.files[0]);
+          className="visually-hidden-input"
+          type="file"
+          accept="image/png,image/jpeg,image/webp,image/gif,image/*"
+          aria-label="Choose a receipt image"
+          disabled={isScanning}
+          onChange={(event) => {
+            const file = event.target.files?.[0];
+            if (file) {
+              setSampleError(null);
+              onFileSelected(file);
             }
+            // Let users choose the same screenshot again after resetting.
+            event.currentTarget.value = '';
           }}
         />
 
-        {/* Ambient Subtle Scan Line */}
-        {isScanning && (
-          <div className="absolute inset-0 pointer-events-none z-20">
-            <div className="w-full h-1 bg-gradient-to-r from-transparent via-cyan-400 to-transparent shadow-[0_0_15px_#22d3ee] animate-scan" />
-            <div className="absolute inset-0 bg-cyan-500/[0.03]" />
-          </div>
-        )}
-
-        <div className="relative z-10 flex flex-col items-center max-w-sm mx-auto">
-          {/* Animated Minimal Icon */}
-          <div
-            className={`w-14 h-14 rounded-2xl flex items-center justify-center mb-4 transition-all duration-300 ${
-              isScanning
-                ? 'bg-cyan-500/20 text-cyan-400 scale-105'
-                : 'bg-white/[0.04] text-slate-300 border border-white/[0.08] group-hover:border-emerald-500/40 group-hover:text-emerald-400'
-            }`}
-          >
-            {isScanning ? (
-              <Zap className="w-6 h-6 animate-pulse text-cyan-300" />
-            ) : (
-              <UploadCloud className="w-6 h-6 text-slate-300" />
-            )}
-          </div>
-
-          <h3 className="text-lg sm:text-xl font-bold text-white tracking-tight mb-1.5">
-            {isScanning ? 'Jev AI is evaluating receipt...' : 'Drop payment screenshot here'}
-          </h3>
-
-          <p className="text-xs sm:text-sm text-slate-400 mb-5 leading-relaxed">
-            {isScanning
-              ? 'Analyzing 12-digit UTR syntax, font weights, and Jev fraud decision matrix'
-              : 'Supports Google Pay, PhonePe, and Paytm receipts. Paste or click to upload.'}
-          </p>
-
-          {!isScanning && (
-            <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-xl bg-white/[0.03] border border-white/[0.07] text-[11px] font-mono text-slate-400">
-              <span>Click to browse</span>
-              <span className="text-slate-600">•</span>
-              <span>or press Ctrl + V</span>
-            </div>
-          )}
+        <div className="upload-art" aria-hidden="true">
+          <span className="upload-art-ring upload-art-ring-one" />
+          <span className="upload-art-ring upload-art-ring-two" />
+          <span className="upload-art-icon">
+            {isScanning ? <LoaderCircle className="is-spinning" /> : <UploadCloud />}
+          </span>
+          <span className="upload-art-spark upload-art-spark-one">✦</span>
+          <span className="upload-art-spark upload-art-spark-two">✧</span>
         </div>
+
+        <h3>{isScanning ? 'Reading your screenshot…' : isDragOver ? 'Drop it here' : 'Drop a screenshot here'}</h3>
+        <p className="dropzone-description">
+          {isScanning
+            ? 'Checking the payment details for anything unusual.'
+            : 'Drag an image here, paste it, or choose one from your device.'}
+        </p>
+
+        <button
+          className="upload-button"
+          type="button"
+          onClick={openFilePicker}
+          disabled={isScanning}
+        >
+          {isScanning ? <LoaderCircle className="is-spinning" /> : <ImagePlus />}
+          <span>{isScanning ? 'Checking screenshot…' : 'Choose screenshot'}</span>
+          {!isScanning && <ArrowUpRight className="upload-button-arrow" />}
+        </button>
+
+        <p className="file-hint">PNG, JPG or WebP <span>·</span> Up to 20 MB</p>
+
+        {isScanning && <div className="scan-sweep" aria-hidden="true" />}
       </div>
 
-      {/* Instant 1-Click Samples Bar */}
-      <div className="pt-1">
-        <div className="flex items-center justify-between mb-2 px-1">
-          <span className="text-[11px] font-mono uppercase tracking-wider text-slate-400 flex items-center gap-1.5">
-            <Sparkles className="w-3 h-3 text-amber-400" />
-            <span>Test with ready samples:</span>
-          </span>
-          <span className="text-[10px] font-mono text-slate-500">1-click test</span>
+      {visibleError && (
+        <div className="upload-error" role="alert">
+          <ShieldAlert aria-hidden="true" />
+          <span>{visibleError}</span>
         </div>
+      )}
 
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-          {PRESET_RECEIPTS.map((preset) => (
+      <div className="sample-heading">
+        <span className="sample-heading-title">Or try a sample</span>
+      </div>
+
+      <div className="sample-grid">
+        {PRESET_RECEIPTS.map((preset) => {
+          const isFake = preset.badge === 'Fake';
+          const isLoading = loadingPreset === preset.id;
+          return (
             <button
               key={preset.id}
-              disabled={isScanning}
-              onClick={() => handlePresetClick(preset)}
-              className="text-left p-3 rounded-xl bg-white/[0.02] hover:bg-white/[0.05] border border-white/[0.06] hover:border-white/[0.14] transition-all group disabled:opacity-50"
+              className={`sample-card ${isFake ? 'sample-card-risk' : 'sample-card-safe'}`}
+              type="button"
+              disabled={isScanning || Boolean(loadingPreset)}
+              onClick={() => void handlePresetClick(preset)}
+              aria-label={`Analyze ${preset.title}`}
             >
-              <div className="flex items-center justify-between mb-1">
-                <span
-                  className={`text-[9px] font-bold font-mono uppercase tracking-wider px-1.5 py-0.5 rounded-full border ${preset.badgeColor}`}
-                >
-                  {preset.badge === 'Fake' ? 'FAKE' : 'REAL'}
+              <span className="sample-card-topline">
+                <span className={`sample-badge ${isFake ? 'sample-badge-risk' : 'sample-badge-safe'}`}>
+                  {isFake ? 'Fake sample' : 'Example'}
                 </span>
-                <span className="text-xs font-mono font-bold text-slate-200">
-                  {preset.amount}
+                <span className="sample-open-icon" aria-hidden="true">
+                  {isLoading ? <LoaderCircle className="is-spinning" /> : <ArrowUpRight />}
                 </span>
-              </div>
-              <div className="text-xs font-semibold text-slate-300 group-hover:text-emerald-400 transition-colors truncate">
-                {preset.app}
-              </div>
+              </span>
+              <span className="sample-amount">{preset.amount}</span>
+              <span className="sample-app">{preset.app}</span>
             </button>
-          ))}
-        </div>
+          );
+        })}
       </div>
-    </div>
+      <p className="sample-footnote">Samples are for testing only. Confirm real payments in your bank app.</p>
+    </section>
   );
 };

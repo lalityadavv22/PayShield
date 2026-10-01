@@ -6,13 +6,9 @@
 export interface PresetItem {
   id: string;
   title: string;
-  titleHi: string;
-  badge: 'Fake' | 'Real' | 'Duplicate';
-  badgeColor: string;
+  badge: 'Fake' | 'Sample' | 'Duplicate';
   app: string;
   amount: string;
-  description: string;
-  descriptionHi: string;
   getDataUrl: () => Promise<string>;
 }
 
@@ -305,50 +301,34 @@ function createRealGPaySvg(): string {
 export const PRESET_RECEIPTS: PresetItem[] = [
   {
     id: 'fake-gpay-45k',
-    title: 'Fake GPay ₹45,000 (Canva Edited)',
-    titleHi: 'फ़ेक GPay ₹45,000 (फॉन्ट छेड़छाड़)',
+    title: 'Edited Google Pay sample · ₹45,000',
     badge: 'Fake',
-    badgeColor: 'bg-rose-500/20 text-rose-300 border-rose-500/30',
     app: 'Google Pay',
     amount: '₹45,000',
-    description: 'Amount font mismatched, invalid 9-digit UTR, Canva image artifact.',
-    descriptionHi: 'राशि का फॉन्ट अलग है, केवल 9 अंकों का गलत UTR, फोटोशॉप/कैनवा आर्टिफ़ैक्ट।',
     getDataUrl: () => svgToPngDataUrl(createFakeGPaySvg()),
   },
   {
     id: 'fake-phonepe-spoof',
-    title: 'Spoof PhonePe (FakePay App)',
-    titleHi: 'नकली PhonePe (प्रैंक/स्पूफ ऐप)',
+    title: 'Spoof PhonePe sample · ₹88,500',
     badge: 'Fake',
-    badgeColor: 'bg-rose-500/20 text-rose-300 border-rose-500/30',
-    app: 'PhonePe Spoof',
+    app: 'PhonePe',
     amount: '₹88,500',
-    description: 'FakePay generator signature, future timestamp, alphabets in UTR.',
-    descriptionHi: 'फेक-पे जनरेटर टेम्पलेट, भविष्य की तारीख (25 Dec 2026), UTR में गलत अक्षर।',
     getDataUrl: () => svgToPngDataUrl(createFakePhonePeSvg()),
   },
   {
     id: 'real-paytm-850',
-    title: 'Real Paytm Receipt ₹850',
-    titleHi: 'असली Paytm रसीद ₹850',
-    badge: 'Real',
-    badgeColor: 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30',
-    app: 'Paytm UPI',
+    title: 'Paytm sample · ₹850',
+    badge: 'Sample',
+    app: 'Paytm',
     amount: '₹850',
-    description: 'Genuine NPCI verified 12-digit UTR 427189012345 with clean ELA.',
-    descriptionHi: '100% असली 12 अंकों का UTR 427189012345, ऑथेंटिक पेमेंट्स फॉन्ट।',
     getDataUrl: () => svgToPngDataUrl(createRealPaytmSvg()),
   },
   {
     id: 'real-gpay-3200',
-    title: 'Real Google Pay ₹3,200',
-    titleHi: 'असली Google Pay ₹3,200',
-    badge: 'Real',
-    badgeColor: 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30',
+    title: 'Google Pay sample · ₹3,200',
+    badge: 'Sample',
     app: 'Google Pay',
     amount: '₹3,200',
-    description: 'Valid UPI Ref 427511993421, proper Google Sans alignment.',
-    descriptionHi: 'प्रमाणित UPI Ref 427511993421, सटीक लेआउट और टाइमस्टैम्प।',
     getDataUrl: () => svgToPngDataUrl(createRealGPaySvg()),
   },
 ];

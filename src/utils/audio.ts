@@ -125,7 +125,7 @@ class SoundManager {
     }
   }
 
-  speakAlert(text: string, lang: 'hi-IN' | 'en-IN' | 'en-US' = 'en-IN') {
+  speakAlert(text: string, lang: 'en-IN' | 'en-US' = 'en-IN') {
     if (!this.voiceEnabled || typeof window === 'undefined' || !window.speechSynthesis) return;
 
     try {
@@ -135,9 +135,10 @@ class SoundManager {
       utterance.pitch = 1.0;
       utterance.lang = lang;
 
-      // Try finding preferred Indian English or Hindi voice
+      // Prefer a clear Indian English voice when one is available.
       const voices = window.speechSynthesis.getVoices();
-      const match = voices.find(v => v.lang.includes('hi') || v.lang.includes('en-IN'));
+      const match = voices.find((voice) => voice.lang.includes('en-IN'))
+        || voices.find((voice) => voice.lang.startsWith('en-'));
       if (match) {
         utterance.voice = match;
       }

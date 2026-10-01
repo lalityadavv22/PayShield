@@ -1,16 +1,19 @@
-import express, { Request, Response } from 'express';
-import { RiskLevel } from './src/types';
+import express from 'express';
+import type { Request, Response } from 'express';
+import type { RiskLevel } from './src/types';
 
 const VERDICT_TITLES: Record<RiskLevel, { en: string; hi: string }> = {
-  GENUINE: { en: 'Payment Verified Genuine', hi: 'भुगतान असली व प्रमाणित है' },
-  SUSPICIOUS: { en: 'Suspicious Transaction', hi: 'संदेहास्पद रसीद (सावधानी बरतें)' },
-  FAKE: { en: 'HIGH RISK: FAKE RECEIPT DETECTED', hi: 'सावधान! फ़ेक / जाली रसीद पकड़ी गई' },
+  GENUINE: { en: 'No obvious edits found', hi: 'रसीद सही दिखती है — बैंक क्रेडिट जांचें' },
+  SUSPICIOUS: { en: 'We couldn’t verify this receipt', hi: 'ध्यान से जांचें — रसीद की पुष्टि बाकी है' },
+  FAKE: { en: 'This receipt looks altered', hi: 'उच्च जोखिम: छेड़छाड़ के संकेत' },
 };
 import path from 'path';
 import crypto from 'crypto';
+import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
-import { GoogleGenAI, Type } from '@google/genai';
+import { GoogleGenAI } from '@google/genai';
 
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 dotenv.config();
 
 const app = express();
@@ -30,7 +33,7 @@ interface SeenRecord {
 const seenReceipts = new Map<string, SeenRecord>();
 const seenTxnIds = new Map<string, SeenRecord>();
 
-// Initial mock bank ledger for real reconciliation (proof verification)
+// Demonstration-only ledger for testing the reconciliation UI; it is not connected to a bank.
 interface BankTransaction {
   id: string;
   utrNumber: string;
@@ -77,6 +80,7 @@ const mockBankLedger: BankTransaction[] = [
 
 // Initialize Gemini Client
 let geminiClient: GoogleGenAI | null = null;
+const geminiModel = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
 if (process.env.GEMINI_API_KEY) {
   try {
     geminiClient = new GoogleGenAI({
@@ -95,6 +99,7 @@ if (process.env.GEMINI_API_KEY) {
 // Forensic prompt instructions
 const FORENSIC_SYSTEM_INSTRUCTION = `
 You are PayShield Forensic AI, an expert digital payment fraud analyst specializing in Indian UPI apps (Google Pay, PhonePe, Paytm, BHIM, CRED, Amazon Pay) and spoof generator apps (FakePay, SpoofPay, PrankPayment, Canva/Photoshop splices).
+A screenshot cannot prove that funds were credited. Use GENUINE only to mean that the visible receipt appears internally consistent; never claim that a bank transfer is verified. If text is unreadable or evidence is uncertain, use SUSPICIOUS. Never invent extracted transaction fields: return an empty string or null when a value cannot be read.
 
 Analyze the provided payment screenshot according to the 7-step pipeline:
 1. OCR: Extract app name, amount (string and numeric), txn ID (UTR/UPI Ref), sender/receiver, date & time, status.
@@ -115,10 +120,10 @@ Analyze the provided payment screenshot according to the 7-step pipeline:
    - 50-84: SUSPICIOUS
    - 0-49: FAKE
 
-Provide responses in both English and clear Hinglish so merchants can quickly understand the risk.
+Write every user-facing field in plain, natural English only. Do not use Hindi or Hinglish. Keep summaries and recommendations brief, explain findings without jargon, and never claim that a payment was confirmed by a bank.
 `;
 
-// API endpoint: Cross-check against Bank Statement / Webhook
+// API endpoint: Check the bundled demonstration ledger (not a live bank connection).
 app.post('/api/reconcile-bank', (req: Request, res: Response) => {
   const { utrNumber, amount } = req.body;
   if (!utrNumber) {
@@ -135,11 +140,11 @@ app.post('/api/reconcile-bank', (req: Request, res: Response) => {
       transaction: matched,
       amountMatches,
       message: amountMatches
-        ? `Verified in Bank Statement! ₹${matched.amount} was successfully credited to ${matched.bankName}.`
-        : `Warning: UTR found, but Bank shows ₹${matched.amount} credited instead of ₹${amount}.`,
+        ? `Demo ledger match: ₹${matched.amount} is marked credited in sample data. This is not a live bank confirmation.`
+        : `Demo UTR match, but the sample ledger amount is ₹${matched.amount}, not ₹${amount}. This is not a live bank confirmation.`,
       messageHi: amountMatches
-        ? `बैंक स्टेटमेंट में वेरिफाई हो गया! ₹${matched.amount} आपके ${matched.bankName} खाते में आ चुका है।`
-        : `सावधान: UTR मिला पर बैंक में ₹${matched.amount} आया है, रसीद जितनी राशि नहीं।`,
+        ? `डेमो लेजर में ₹${matched.amount} क्रेडिट दिख रहा है। यह लाइव बैंक पुष्टि नहीं है।`
+        : `डेमो UTR मिला, लेकिन नमूना लेजर में ₹${matched.amount} है, ₹${amount} नहीं। यह लाइव बैंक पुष्टि नहीं है।`,
     });
   }
 
@@ -147,8 +152,8 @@ app.post('/api/reconcile-bank', (req: Request, res: Response) => {
     found: false,
     transaction: null,
     amountMatches: false,
-    message: `UTR ${cleanUtr} NOT found in live Bank Statement / Webhooks. Goods should not be released until bank credit is received.`,
-    messageHi: `बैंक स्टेटमेंट या साउंडबॉक्स में UTR ${cleanUtr} की कोई एंट्री नहीं मिली। जब तक बैंक SMS या साउंडबॉक्स आवाज़ न दे, सामान न दें।`,
+    message: `UTR ${cleanUtr} was not found in the PayShield demo ledger. This lookup is not connected to a real bank.`,
+    messageHi: `UTR ${cleanUtr} PayShield डेमो लेजर में नहीं मिला। यह जांच किसी असली बैंक से जुड़ी नहीं है।`,
   });
 });
 
@@ -160,15 +165,16 @@ app.get('/api/bank-ledger', (_req: Request, res: Response) => {
 // API endpoint: Analyze screenshot
 app.post('/api/analyze-receipt', async (req: Request, res: Response) => {
   try {
-    const { imageBase64, mimeType = 'image/png', fileName = 'receipt.png' } = req.body;
+    const { imageBase64, mimeType = 'image/png', fileName = 'receipt.png' } = req.body || {};
 
-    if (!imageBase64) {
+    if (typeof imageBase64 !== 'string' || !imageBase64.trim()) {
       return res.status(400).json({ error: 'imageBase64 is required' });
     }
 
-    // Clean base64 string and extract real MIME
+    // Clean base64 string and extract the actual MIME type from a data URL when present.
     let cleanBase64 = imageBase64;
-    let cleanMime = mimeType || 'image/png';
+    let cleanMime = typeof mimeType === 'string' ? mimeType : 'image/png';
+    const safeFileName = typeof fileName === 'string' ? fileName.slice(0, 180) : 'receipt.png';
 
     if (imageBase64.startsWith('data:')) {
       const commaIdx = imageBase64.indexOf(',');
@@ -195,7 +201,16 @@ app.post('/api/analyze-receipt', async (req: Request, res: Response) => {
       cleanBase64 = cleanBase64.replace(/^data:[^;]+;base64,/, '').trim();
     }
 
+    if (!cleanMime.toLowerCase().startsWith('image/')) {
+      return res.status(415).json({ error: 'Only image screenshots can be analyzed.' });
+    }
     const buffer = Buffer.from(cleanBase64, 'base64');
+    if (!buffer.length) {
+      return res.status(400).json({ error: 'The uploaded image is empty or invalid.' });
+    }
+    if (buffer.length > 20 * 1024 * 1024) {
+      return res.status(413).json({ error: 'The uploaded image is larger than 20 MB.' });
+    }
 
     // 1. Calculate image hash for duplicate detection (Step 6)
     const hash = crypto.createHash('sha256').update(buffer).digest('hex').substring(0, 16);
@@ -224,14 +239,14 @@ app.post('/api/analyze-receipt', async (req: Request, res: Response) => {
     else if (rawString.includes('PicsArt') || rawString.includes('picsart')) detectedSoftware = 'PicsArt Photo Studio';
     else if (rawString.includes('GIMP')) detectedSoftware = 'GIMP Image Editor';
 
-    // 3. Multimodal Analysis with Gemini 3.8 Flash (only if raster image format supported by Gemini)
+    // 3. Multimodal analysis (only when a server-side Gemini key and supported image are available).
     const supportedGeminiMimes = ['image/png', 'image/jpeg', 'image/jpg', 'image/webp', 'image/heic', 'image/heif'];
     const isGeminiCompatible = supportedGeminiMimes.includes(cleanMime.toLowerCase());
 
     if (geminiClient && isGeminiCompatible) {
       try {
         const response = await geminiClient.models.generateContent({
-          model: 'gemini-3.8-flash',
+          model: geminiModel,
           contents: {
             parts: [
               {
@@ -405,7 +420,7 @@ Return ONLY valid JSON matching this schema:
           if (isDuplicateImage && !parsed.redFlags.some((f: string) => f.includes('Duplicate'))) {
             parsed.overallScore = Math.min(parsed.overallScore, 25);
             parsed.verdict = 'FAKE';
-            parsed.redFlags.unshift('Exact duplicate screenshot hash detected! Replay attack attempt.');
+            parsed.redFlags.unshift('This exact screenshot was already checked in this session.');
             parsed.redFlagsHi.unshift('वही समान स्क्रीनशॉट पहले भी अपलोड किया जा चुका है! (रीप्ले फ्रॉड)');
           }
 
@@ -436,7 +451,7 @@ Return ONLY valid JSON matching this schema:
 
           parsed.id = `rep-${Date.now()}`;
           parsed.timestamp = Date.now();
-          parsed.fileName = fileName;
+          parsed.fileName = safeFileName;
           parsed.fileSize = buffer.length;
           parsed.imageHash = hash;
 
@@ -447,14 +462,15 @@ Return ONLY valid JSON matching this schema:
       }
     }
 
-    // High-performance Heuristics Engine Fallback (ensures 100% reliability)
+    // Conservative fallback: return a report, but never label an unreadable upload as genuine.
     const report = generateHeuristicForensics({
       rawString,
-      fileName,
+      fileName: safeFileName,
       bufferLength: buffer.length,
       hash,
       isDuplicateImage,
       detectedSoftware,
+      mimeType: cleanMime,
       nowIso,
     });
 
@@ -476,126 +492,138 @@ function generateHeuristicForensics(options: {
   hash: string;
   isDuplicateImage: boolean;
   detectedSoftware?: string;
+  mimeType: string;
   nowIso: string;
 }) {
-  const { rawString, fileName, bufferLength, hash, isDuplicateImage, detectedSoftware, nowIso } = options;
+  const { rawString, fileName, bufferLength, hash, isDuplicateImage, mimeType, nowIso } = options;
+  const lowerFileName = fileName.toLowerCase();
 
-  // Detect signature keywords inside SVG / Text stream
-  const isCanva = rawString.includes('Canva') || rawString.includes('Comic Sans') || rawString.includes('Canva Artifact');
-  const isFakePay = rawString.includes('FakePay') || rawString.includes('Spoof') || rawString.includes('Prank');
-  const isPaytm = rawString.includes('paytm') || rawString.includes('Paytm') || rawString.includes('Gupta Grocery');
-  const isGPayReal = rawString.includes('Cafe Coffee Day') || (rawString.includes('Google Pay') && !isCanva);
+  // Raster demo receipts do not retain their SVG text after canvas export, so recognize the bundled samples by name.
+  const isFakeGPaySample = lowerFileName.includes('fake-gpay-45k');
+  const isFakePhonePeSample = lowerFileName.includes('fake-phonepe-spoof');
+  const isRealPaytmSample = lowerFileName.includes('real-paytm-850');
+  const isRealGPaySample = lowerFileName.includes('real-gpay-3200');
+  const isCanva = isFakeGPaySample || rawString.includes('Canva') || rawString.includes('Comic Sans') || rawString.includes('Canva Artifact');
+  const isFakePay = isFakePhonePeSample || rawString.includes('FakePay') || rawString.includes('Spoof') || rawString.includes('Prank');
+  // Only the bundled, explicitly selected samples can be marked positive without the Vision model.
+  const isKnownDemo = isFakeGPaySample || isFakePhonePeSample || isRealPaytmSample || isRealGPaySample;
+  let detectedEditor = options.detectedSoftware;
+  if (!detectedEditor && isFakeGPaySample) detectedEditor = 'Canva Design Tool (demo sample)';
 
-  let appName = 'Google Pay';
-  let amountStr = '₹ 1,200';
-  let amountNum: number = 1200;
-  let txnId = '427189012345';
-  let isTxnValid = true;
+  let appName = 'Spoof App / Unknown';
+  let amountStr = 'Not extracted';
+  let amountNum: number | null = null;
+  let txnId = '';
+  let isTxnValid = false;
   let isFutureDate = false;
-  let verdict: 'GENUINE' | 'SUSPICIOUS' | 'FAKE' = 'GENUINE';
-  let trustScore = 95;
-  let redFlags: string[] = [];
-  let redFlagsHi: string[] = [];
+  let verdict: 'GENUINE' | 'SUSPICIOUS' | 'FAKE' = 'SUSPICIOUS';
+  let trustScore = 48;
+  let dateTime = 'Not extracted';
+  let statusText = 'Unverified';
+  let redFlags: string[] = [
+    'We couldn’t read the payment details in this screenshot.',
+    'No payment reference was found.',
+  ];
+  let redFlagsHi: string[] = [
+    'इस डिप्लॉयमेंट में विज़ुअल AI जांच उपलब्ध नहीं है, इसलिए रसीद असली है या नहीं यह तय नहीं हो सका।',
+    'ट्रांजैक्शन की जानकारी नहीं निकली। सामान देने से पहले बैंक ऐप में क्रेडिट ज़रूर जांचें।',
+  ];
   let greenFlags: string[] = [];
   let greenFlagsHi: string[] = [];
 
-  if (isCanva) {
+  if (isFakeGPaySample) {
     appName = 'Google Pay';
     amountStr = '₹ 45,000';
     amountNum = 45000;
-    txnId = '948210492'; // 9 digits
-    isTxnValid = false;
+    txnId = '948210492'; // Demo sample: intentionally invalid 9-digit UTR.
+    dateTime = '01 Oct 2026, 09:41 AM';
+    statusText = 'Payment Successful';
     verdict = 'FAKE';
     trustScore = 18;
     redFlags = [
-      'UPI Transaction ID is only 9 digits (Standard NPCI UTR requires exactly 12 digits)',
-      'Severe font mismatch in Amount text box (Canva typography anomaly)',
-      'Canva graphic editing metadata detected in image header',
-      'Pixel compression boundary detected around ₹ 45,000 amount area',
+      'The payment reference has 9 digits; standard UPI references have 12.',
+      'The amount uses a different font from the rest of the receipt.',
+      'This sample contains editing marks.',
+      'A visible patch appears around the ₹45,000 amount.',
     ];
     redFlagsHi = [
-      'UPI Transaction ID में केवल 9 अंक हैं (असली NPCI UTR हमेशा 12 अंकों का होता है)',
-      'अमाउंट (₹ 45,000) वाले बॉक्स का फॉन्ट बाकी स्क्रीनशॉट से बिल्कुल मेल नहीं खा रहा',
-      'फोटो के मेटाडेटा में कैनवा (Canva) ग्राफ़िक टूल के स्पष्ट संकेत मिले हैं',
-      'अमाउंट के चारों ओर एडिटिंग और पैचिंग का निशान (कंप्रेशन बाउंड्री) पाया गया',
+      'UPI Transaction ID में केवल 9 अंक हैं (आमतौर पर UTR में 12 अंक होते हैं)।',
+      'डेमो रसीद में अमाउंट वाले हिस्से का फॉन्ट अलग है।',
+      'यह नमूना Canva-संपादित रसीद के रूप में बनाया गया है।',
+      '₹45,000 के आसपास कंप्रेशन पैच दिखाई देता है।',
     ];
-  } else if (isFakePay) {
-    appName = 'PhonePe Spoof';
+  } else if (isFakePhonePeSample) {
+    appName = 'PhonePe';
     amountStr = '₹ 88,500';
     amountNum = 88500;
     txnId = '427189X0912A';
-    isTxnValid = false;
+    dateTime = '25 Dec 2026, 11:15 PM';
+    statusText = 'Payment Successful';
     isFutureDate = true;
     verdict = 'FAKE';
     trustScore = 12;
     redFlags = [
-      'Spoof App Signature: FakePay v3.2 template fingerprint identified',
-      'Future Date detected: Receipt states 25 Dec 2026',
-      'Invalid UTR: Contains alphabets (427189X0912A) instead of 12 numeric digits',
-      'Non-standard tick mark geometry and button layout',
+      'This screenshot uses a known fake-payment template.',
+      'The date is in the future: 25 Dec 2026.',
+      'The reference contains letters instead of 12 digits.',
+      'The layout and checkmark do not match the usual app design.',
     ];
     redFlagsHi = [
-      'स्पूफ ऐप के लक्षण: FakePay v3.2 प्रैंक ऐप टेम्पलेट का फिंगरप्रिंट मिला है',
-      'भविष्य की तारीख: रसीद पर 25 Dec 2026 की तारीख लिखी है जो असंभव है',
-      'गलत UTR: बैंक UTR में अक्षर (X और A) हैं, जबकि यह केवल 12 अंकों की संख्या होती है',
-      'चेकमार्क और लेआउट आधिकारिक PhonePe ऐप के मानकों से भिन्न है',
+      'FakePay v3.2 स्पूफ ऐप टेम्पलेट के संकेत मिले।',
+      'भविष्य की तारीख: रसीद पर 25 Dec 2026 लिखा है।',
+      'UTR में 12 अंकों के बजाय अक्षर मौजूद हैं।',
+      'चेकमार्क और पेमेंट लेआउट सामान्य ऐप जैसा नहीं है।',
     ];
-  } else if (isPaytm) {
-    appName = 'Paytm UPI';
+  } else if (isRealPaytmSample) {
+    appName = 'Paytm';
     amountStr = '₹ 850';
     amountNum = 850;
     txnId = '427189012345';
+    dateTime = '01 Oct 2026, 02:27 PM';
+    statusText = 'Payment successful';
+    isTxnValid = true;
     verdict = 'GENUINE';
     trustScore = 98;
+    redFlags = [];
+    redFlagsHi = [];
     greenFlags = [
-      'Valid 12-digit numeric NPCI UPI Reference Number (427189012345)',
-      'Authentic Paytm typography and primary #002e6e brand layout match',
-      'Uniform ELA compression levels across amount, name, and timestamp',
-      'No editing software artifacts or duplicate replays detected',
+      'This example uses a 12-digit payment reference.',
+      'Its layout matches the Paytm sample design.',
+      'This image has not been checked before in this session.',
     ];
     greenFlagsHi = [
-      'प्रमाणित 12 अंकों का वैध NPCI UPI रेफरेंस नंबर (427189012345)',
-      'Paytm का आधिकारिक लेआउट, सही रंग और ऑथेंटिक फ़ॉन्ट स्टाइल',
-      'अमाउंट और तारीख के आसपास कोई एडिटिंग या री-कंप्रेशन का निशान नहीं',
-      'किसी भी फोटोशॉप या फेक ऐप का कोई निशान नहीं मिला',
+      'डेमो नमूने में 12 अंकों का UPI रेफरेंस है।',
+      'रसीद को असली Paytm नमूने के रूप में बनाया गया है।',
+      'इस स्कैन में डुप्लिकेट नमूना नहीं मिला।',
     ];
-  } else if (isGPayReal) {
+  } else if (isRealGPaySample) {
     appName = 'Google Pay';
     amountStr = '₹ 3,200';
     amountNum = 3200;
     txnId = '427511993421';
+    dateTime = '01 Oct 2026, 04:02 PM';
+    statusText = 'Completed';
+    isTxnValid = true;
     verdict = 'GENUINE';
     trustScore = 96;
+    redFlags = [];
+    redFlagsHi = [];
     greenFlags = [
-      'Valid 12-digit numeric UPI transaction ID (427511993421)',
-      'Original Google Sans / Roboto typeface with correct kerning',
-      'Official Google Pay status tick icon and shade alignment',
-      'Consistent JPEG pixel distribution across all text blocks',
+      'This example uses a 12-digit payment reference.',
+      'Its layout matches the Google Pay sample design.',
+      'This image has not been checked before in this session.',
     ];
     greenFlagsHi = [
-      'सही 12 अंकों का यूपीआई ट्रांजैक्शन आईडी (427511993421)',
-      'गूगल पे का आधिकारिक गूगल सैंस फॉन्ट और लेआउट अनुपात',
-      'सटीक स्टेटस टिक मार्क और कलर मैच',
-      'कोई विसंगति या रीप्ले फ्रॉड नहीं पाया गया',
-    ];
-  } else {
-    // Default plausible receipt
-    verdict = 'GENUINE';
-    trustScore = 88;
-    greenFlags = [
-      'UPI Transaction format matches standards',
-      'Layout aligns with standard mobile banking screenshot',
-    ];
-    greenFlagsHi = [
-      'UPI ट्रांजैक्शन फॉर्मेट सही है',
-      'लेआउट मोबाइल बैंकिंग स्क्रीनशॉट के अनुकूल है',
+      'डेमो नमूने में 12 अंकों का UPI रेफरेंस है।',
+      'रसीद को असली Google Pay नमूने के रूप में बनाया गया है।',
+      'इस स्कैन में डुप्लिकेट नमूना नहीं मिला।',
     ];
   }
 
   if (isDuplicateImage) {
     trustScore = Math.min(trustScore, 20);
     verdict = 'FAKE';
-    redFlags.unshift('Exact duplicate screenshot hash detected! Replay attack attempt.');
+    redFlags.unshift('This exact screenshot was already checked in this session.');
     redFlagsHi.unshift('वही समान स्क्रीनशॉट पहले भी अपलोड किया जा चुका है! (रीप्ले फ्रॉड)');
   }
 
@@ -612,21 +640,29 @@ function generateHeuristicForensics(options: {
     verdictTitle: verdictTitles.en,
     verdictTitleHi: verdictTitles.hi,
     summary: verdict === 'GENUINE'
-      ? `The payment receipt displays authentic ${appName} UI, compliant 12-digit UTR, and uniform compression without tampering.`
-      : `High probability of payment spoofing. Tampered amount formatting and abnormal UTR structure detected. Do not release goods.`,
+      ? `This ${appName} example shows no obvious edits. Always confirm real payments in your bank app.`
+      : verdict === 'FAKE'
+        ? isDuplicateImage
+          ? 'This exact screenshot was already checked in this session.'
+          : 'This sample shows signs of editing. Wait until the money appears in your bank app before handing anything over.'
+        : 'We couldn’t read the payment details in this screenshot. Check your bank app to confirm whether the money arrived.',
     summaryHi: verdict === 'GENUINE'
-      ? `यह रसीद असली ${appName} लेआउट, सही 12-अंकों का UTR और बिना किसी छेड़छाड़ के प्रमाणित है।`
-      : `यह पेमेंट स्क्रीनशॉट जाली होने की भारी संभावना है। फॉन्ट में छेड़छाड़ और गलत UTR मिला है। कृपया सामान न दें।`,
+      ? `यह ${appName} का डेमो नमूना है जिसे सकारात्मक उदाहरण के रूप में रखा गया है। स्क्रीनशॉट बैंक क्रेडिट का प्रमाण नहीं है।`
+      : verdict === 'FAKE'
+        ? isDuplicateImage
+          ? 'यह बिल्कुल वही स्क्रीनशॉट इस सेशन में पहले भी जांचा गया है। दोबारा इस्तेमाल की गई रसीद को रीप्ले जोखिम मानें।'
+          : 'इस डेमो रसीद में स्पूफ या छेड़छाड़ के स्पष्ट संकेत हैं। केवल इस तस्वीर के आधार पर सामान न दें।'
+        : 'तस्वीर मिली, लेकिन इस डिप्लॉयमेंट में उसे पढ़ने वाला विज़न मॉडल उपलब्ध नहीं है। बैंक ऐप में क्रेडिट जांचें।',
     extracted: {
       app: appName as any,
       amount: amountStr,
       amountNumeric: amountNum,
       txnId,
-      upiId: 'merchant@upi',
-      recipientName: 'Verified Store',
-      senderName: 'Customer',
-      dateTime: '01 Oct 2026',
-      statusText: 'Payment Successful',
+      upiId: '',
+      recipientName: '',
+      senderName: '',
+      dateTime,
+      statusText,
       isFutureDate,
       isTxnIdStandardLength: isTxnValid,
     },
@@ -637,11 +673,15 @@ function generateHeuristicForensics(options: {
         nameHi: 'ओसीआर टेक्स्ट निष्कर्षण',
         description: 'Extracting Txn ID, amount, timestamp, UPI ID',
         descriptionHi: 'ट्रांजैक्शन आईडी, राशि, समय और यूपीआई पता निकालना',
-        status: 'passed',
-        score: 95,
-        details: `Extracted amount: ${amountStr}, Txn ID: ${txnId}`,
-        detailsHi: `सफलतापूर्वक अमाउंट (${amountStr}) व Txn ID (${txnId}) निकाली गई`,
-        flags: [],
+        status: isKnownDemo ? 'passed' : 'warning',
+        score: isKnownDemo ? 95 : 35,
+        details: isKnownDemo
+          ? `Sample details: ${amountStr}, reference: ${txnId || 'not available'}`
+          : 'Vision/OCR is not configured; no transaction fields could be extracted from this image.',
+        detailsHi: isKnownDemo
+          ? `नमूने की जानकारी: ${amountStr}, रेफरेंस: ${txnId || 'उपलब्ध नहीं'}`
+          : 'विज़न/OCR उपलब्ध नहीं है; तस्वीर से ट्रांजैक्शन जानकारी नहीं निकाली जा सकी।',
+        flags: isKnownDemo ? [] : ['Vision model unavailable'],
       },
       {
         id: 2,
@@ -649,11 +689,15 @@ function generateHeuristicForensics(options: {
         nameHi: 'फॉर्मेट व सिंटैक्स जांच',
         description: 'UPI 12-digit UTR rules, timestamp logic, amount formatting',
         descriptionHi: '12 अंकों का यूपीआई यूटीआर नियम, तारीख और राशि फॉर्मेट जांच',
-        status: isTxnValid && !isFutureDate ? 'passed' : 'failed',
-        score: isTxnValid && !isFutureDate ? 98 : 20,
-        details: isTxnValid ? 'Valid 12-digit UTR and valid date' : 'Invalid UTR format or future timestamp',
-        detailsHi: isTxnValid ? '12 अंकों का वैध UTR और तारीख सही है' : 'गलत UTR फॉर्मेट या भविष्य की तारीख',
-        flags: isTxnValid ? [] : ['Non-standard UTR length', 'Timestamp anomaly'],
+        status: !isKnownDemo ? 'warning' : isTxnValid && !isFutureDate ? 'passed' : 'failed',
+        score: !isKnownDemo ? 35 : isTxnValid && !isFutureDate ? 98 : 20,
+        details: !isKnownDemo
+          ? 'No readable UTR or timestamp was available for validation.'
+          : isTxnValid && !isFutureDate ? 'Valid 12-digit UTR and sample date.' : 'The sample has a non-standard UTR or future timestamp.',
+        detailsHi: !isKnownDemo
+          ? 'जांच के लिए पढ़ने योग्य UTR या तारीख उपलब्ध नहीं थी।'
+          : isTxnValid && !isFutureDate ? 'डेमो में 12 अंकों का UTR और तारीख सही है।' : 'नमूने में गलत UTR या भविष्य की तारीख है।',
+        flags: !isKnownDemo ? ['No OCR data'] : isTxnValid ? [] : ['Non-standard UTR length', 'Timestamp anomaly'],
       },
       {
         id: 3,
@@ -661,11 +705,15 @@ function generateHeuristicForensics(options: {
         nameHi: 'टेम्पलेट लेआउट व फ़ॉन्ट मिलान',
         description: 'Comparing UI layout, official app fonts, tick icon',
         descriptionHi: 'ऐप के ऑफिशियल लेआउट, फॉन्ट और चेकमार्क की जांच',
-        status: verdict === 'GENUINE' ? 'passed' : 'failed',
-        score: verdict === 'GENUINE' ? 96 : 30,
-        details: verdict === 'GENUINE' ? 'Layout matches official design system' : 'Mismatched typography and font weight',
-        detailsHi: verdict === 'GENUINE' ? 'ऑफिशियल ऐप लेआउट से पूर्ण मिलान' : 'फॉन्ट की बनावट और मोटाई में अंतर',
-        flags: verdict === 'GENUINE' ? [] : ['Font family discrepancy'],
+        status: !isKnownDemo ? 'warning' : verdict === 'GENUINE' ? 'passed' : 'failed',
+        score: !isKnownDemo ? 35 : verdict === 'GENUINE' ? 96 : 30,
+        details: !isKnownDemo
+          ? 'Layout cannot be compared until the image text is available.'
+          : verdict === 'GENUINE' ? 'Bundled positive sample layout.' : 'The sample includes a typography or spoof-layout warning.',
+        detailsHi: !isKnownDemo
+          ? 'तस्वीर का टेक्स्ट उपलब्ध होने पर ही लेआउट की तुलना हो सकती है।'
+          : verdict === 'GENUINE' ? 'सकारात्मक डेमो नमूने का लेआउट।' : 'नमूने में फॉन्ट या स्पूफ लेआउट की चेतावनी है।',
+        flags: !isKnownDemo ? ['Vision model unavailable'] : verdict === 'GENUINE' ? [] : ['Font family discrepancy'],
       },
       {
         id: 4,
@@ -673,11 +721,15 @@ function generateHeuristicForensics(options: {
         nameHi: 'छेड़छाड़ व पिक्सेल अनियमितता',
         description: 'Pixel density around amount, splicing boundaries, noise artifacts',
         descriptionHi: 'अमाउंट के आसपास एडिटेड पिक्सेल, फॉन्ट का अंतर और पैचिंग',
-        status: verdict === 'GENUINE' ? 'passed' : 'failed',
-        score: verdict === 'GENUINE' ? 95 : 15,
-        details: verdict === 'GENUINE' ? 'Uniform error level distribution across image' : 'Isolated compression anomaly around amount box',
-        detailsHi: verdict === 'GENUINE' ? 'पूरे स्क्रीनशॉट पर एकसमान ईएलए स्तर' : 'अमाउंट बॉक्स के आसपास अलग तरह का कंप्रेशन मिला',
-        flags: verdict === 'GENUINE' ? [] : ['High ELA variance in amount box'],
+        status: !isKnownDemo ? 'warning' : verdict === 'GENUINE' ? 'passed' : 'failed',
+        score: !isKnownDemo ? 35 : verdict === 'GENUINE' ? 95 : 15,
+        details: !isKnownDemo
+          ? 'Pixel-forensics verdict is unavailable without the vision analysis service.'
+          : verdict === 'GENUINE' ? 'Positive demo sample; pixel evidence is illustrative.' : 'Tampering cues are included in this fake demo sample.',
+        detailsHi: !isKnownDemo
+          ? 'विज़न जांच सेवा के बिना पिक्सेल फॉरेंसिक्स उपलब्ध नहीं है।'
+          : verdict === 'GENUINE' ? 'सकारात्मक डेमो नमूना; पिक्सेल जानकारी केवल उदाहरण है।' : 'इस फ़ेक डेमो में छेड़छाड़ के संकेत शामिल हैं।',
+        flags: !isKnownDemo ? ['Vision model unavailable'] : verdict === 'GENUINE' ? [] : ['Demo tampering signal'],
       },
       {
         id: 5,
@@ -685,11 +737,15 @@ function generateHeuristicForensics(options: {
         nameHi: 'मेटाडेटा व एडिटिंग सॉफ्टवेयर जांच',
         description: 'EXIF signatures, Canva/Photoshop tags, spoof app fingerprints',
         descriptionHi: 'कैनवा, फोटोशॉप या फेक-पे स्पूफ ऐप के डिजिटल निशान',
-        status: detectedSoftware || isCanva || isFakePay ? 'failed' : 'passed',
-        score: detectedSoftware || isCanva || isFakePay ? 20 : 96,
-        details: detectedSoftware ? `Editing signature: ${detectedSoftware}` : 'No known editing tool headers',
-        detailsHi: detectedSoftware ? `एडिटिंग टूल: ${detectedSoftware}` : 'कोई एडिटिंग सॉफ्टवेयर का टैग नहीं मिला',
-        flags: detectedSoftware ? [detectedSoftware] : [],
+        status: detectedEditor || isCanva || isFakePay ? 'failed' : isKnownDemo ? 'passed' : 'warning',
+        score: detectedEditor || isCanva || isFakePay ? 20 : isKnownDemo ? 96 : 35,
+        details: detectedEditor
+          ? `Editing signature: ${detectedEditor}`
+          : isFakePay ? 'Known FakePay demo fingerprint.' : !isKnownDemo ? 'Metadata checks cannot validate authenticity without image analysis.' : 'No known editor marker in this bundled demo.',
+        detailsHi: detectedEditor
+          ? `एडिटिंग टूल: ${detectedEditor}`
+          : isFakePay ? 'FakePay डेमो टेम्पलेट के संकेत मिले।' : !isKnownDemo ? 'इमेज जांच के बिना मेटाडेटा से प्रामाणिकता तय नहीं हो सकती।' : 'इस डेमो नमूने में ज्ञात एडिटर टैग नहीं है।',
+        flags: detectedEditor ? [detectedEditor] : isFakePay ? ['FakePay template'] : !isKnownDemo ? ['Vision model unavailable'] : [],
       },
       {
         id: 6,
@@ -709,20 +765,20 @@ function generateHeuristicForensics(options: {
         nameHi: 'स्कोरिंग लेयर व जेव निर्णय',
         description: 'Aggregated risk decision model and recommendation',
         descriptionHi: 'समग्र जोखिम स्कोर और दुकानदार के लिए अंतिम चेतावनी',
-        status: verdict === 'GENUINE' ? 'passed' : 'failed',
+        status: verdict === 'GENUINE' ? 'passed' : verdict === 'FAKE' ? 'failed' : 'warning',
         score: trustScore,
         details: `Final Trust Score: ${trustScore}/100 [${verdict}]`,
         detailsHi: `अंतिम विश्वसनीयता स्कोर: ${trustScore}/100 [${verdict}]`,
         flags: [],
       },
     ],
-    tamperedZones: verdict === 'GENUINE' ? [] : [
+    tamperedZones: isFakeGPaySample || isFakePhonePeSample ? [
       {
         label: 'Amount Block',
         field: 'amount' as const,
         text: amountStr,
         isTampered: true,
-        tamperReason: 'Mismatched font weight and irregular compression boundary',
+        tamperReason: 'Known visual tampering cue in this bundled demo sample.',
         box: [240, 200, 360, 800] as [number, number, number, number],
       },
       {
@@ -730,28 +786,32 @@ function generateHeuristicForensics(options: {
         field: 'txnId' as const,
         text: txnId,
         isTampered: !isTxnValid,
-        tamperReason: 'Non-standard UTR length or syntax',
+        tamperReason: 'Non-standard UTR length or syntax in the demo sample.',
         box: [460, 100, 530, 900] as [number, number, number, number],
       },
-    ],
+    ] : [],
     redFlags,
     redFlagsHi,
     greenFlags,
     greenFlagsHi,
     metadataInfo: {
-      softwareDetected: detectedSoftware,
-      hasExifMismatch: !!detectedSoftware,
-      mimeType: 'image/png',
-      resolution: '720 x 1280',
+      softwareDetected: detectedEditor,
+      hasExifMismatch: !!detectedEditor,
+      mimeType,
+      resolution: isKnownDemo ? '720 x 1280' : 'Not extracted',
       isDuplicateScreenshot: isDuplicateImage,
       previousSeenDate: undefined,
     },
     recommendation: verdict === 'GENUINE'
-      ? 'Payment looks legitimate. If this is a very high value transaction, still verify credit in your bank app or Soundbox.'
-      : 'DO NOT DISPATCH GOODS. The screenshot shows clear signs of forgery. Ask customer to wait until bank SMS/Soundbox announces the credit.',
+      ? 'This is a positive demo sample only. For a real payment, confirm the credit in your bank app or account statement.'
+      : verdict === 'FAKE'
+        ? 'Do not release goods based on this screenshot. Ask the sender to wait until the credit appears in your bank app or statement.'
+        : 'The screenshot could not be verified because automated vision is unavailable. Do not treat it as proof; check your bank app or statement directly.',
     recommendationHi: verdict === 'GENUINE'
-      ? 'भुगतान सही प्रतीत होता है। यदि राशि बहुत बड़ी है, तो भी बैंक ऐप या साउंडबॉक्स में क्रेडिट अवश्य जांचें।'
-      : 'सामान बिल्कुल न दें! स्क्रीनशॉट में साफ़ हेराफेरी पकड़ी गई है। ग्राहक से कहें कि जब तक साउंडबॉक्स या बैंक SMS न आए, तब तक रुकें।',
+      ? 'यह केवल सकारात्मक डेमो नमूना है। असली भुगतान के लिए बैंक ऐप या स्टेटमेंट में क्रेडिट ज़रूर जांचें।'
+      : verdict === 'FAKE'
+        ? 'इस स्क्रीनशॉट के आधार पर सामान न दें। बैंक ऐप या स्टेटमेंट में क्रेडिट आने तक प्रतीक्षा करें।'
+        : 'ऑटोमेटेड विज़न उपलब्ध नहीं है, इसलिए रसीद की पुष्टि नहीं हो सकी। इसे प्रमाण न मानें; सीधे बैंक ऐप में जांचें।',
   };
 }
 
@@ -776,7 +836,13 @@ async function startServer() {
   });
 }
 
-startServer().catch((err) => {
-  console.error('Failed to start server:', err);
-  process.exit(1);
-});
+export { app };
+export default app;
+
+// Vercel imports this Express app as a serverless function; local production/dev runs listen here.
+if (process.env.VERCEL !== '1') {
+  startServer().catch((err) => {
+    console.error('Failed to start server:', err);
+    process.exit(1);
+  });
+}

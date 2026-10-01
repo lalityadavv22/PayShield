@@ -1,6 +1,6 @@
 {
-  "name": "PayShield - AI Payment & UPI Fraud Detector",
-  "description": "Smart UPI and payment screenshot fraud detector. Analyzes OCR, formatting, layout anomalies, font tampering, ELA artifacts, and duplicate transactions with AI scoring.",
+  "name": "PayShield — Trust the payment, not the screenshot",
+  "description": "Check a payment screenshot for signs of editing. Confirm real payments in your bank app.",
   "requestFramePermissions": [],
   "majorCapabilities": [
     "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"

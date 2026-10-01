@@ -1,0 +1,11 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": "vite",
+  "buildCommand": "npm run build",
+  "outputDirectory": "dist",
+  "functions": {
+    "api/analyze-receipt.ts": { "maxDuration": 60 },
+    "api/reconcile-bank.ts": { "maxDuration": 15 },
+    "api/bank-ledger.ts": { "maxDuration": 15 }
+  }
+}

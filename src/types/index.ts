@@ -8,7 +8,7 @@ export interface BoundingBox {
   text: string;
   isTampered: boolean;
   tamperReason?: string;
-  box?: [number, number, number, number]; // [ymin, xmin, ymax, xmax] in 0-1000 normalized coords
+  box?: [number, number, number, number];
 }
 
 export interface ExtractedData {
@@ -28,13 +28,10 @@ export interface ExtractedData {
 export interface PipelineStepResult {
   id: number;
   name: string;
-  nameHi: string;
   description: string;
-  descriptionHi: string;
   status: 'passed' | 'warning' | 'failed' | 'checking';
-  score: number; // 0 - 100
+  score: number;
   details: string;
-  detailsHi: string;
   flags: string[];
 }
 
@@ -44,19 +41,15 @@ export interface AnalysisReport {
   fileName: string;
   fileSize: number;
   imageHash: string;
-  overallScore: number; // 0 - 100 Trust Score
+  overallScore: number;
   verdict: RiskLevel;
   verdictTitle: string;
-  verdictTitleHi: string;
   summary: string;
-  summaryHi: string;
   extracted: ExtractedData;
   pipelineSteps: PipelineStepResult[];
   tamperedZones: BoundingBox[];
   redFlags: string[];
-  redFlagsHi: string[];
   greenFlags: string[];
-  greenFlagsHi: string[];
   metadataInfo: {
     softwareDetected?: string;
     hasExifMismatch: boolean;
@@ -66,7 +59,6 @@ export interface AnalysisReport {
     previousSeenDate?: string;
   };
   recommendation: string;
-  recommendationHi: string;
 }
 
 export interface BankStatementRecord {
