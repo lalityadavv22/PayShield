@@ -57,6 +57,11 @@ export interface AnalysisReport {
     resolution: string;
     isDuplicateScreenshot: boolean;
     previousSeenDate?: string;
+    /**
+     * `gemini` when the server-side AI vision model produced this report,
+     * `heuristics` when it fell back to the local rule engine (no API key or model error).
+     */
+    visionEngine?: 'gemini' | 'heuristics';
   };
   recommendation: string;
 }

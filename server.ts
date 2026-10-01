@@ -81,10 +81,11 @@ const mockBankLedger: BankTransaction[] = [
 // Initialize Gemini Client
 let geminiClient: GoogleGenAI | null = null;
 const geminiModel = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
-if (process.env.GEMINI_API_KEY) {
+const geminiApiKeyPresent = Boolean((process.env.GEMINI_API_KEY || '').trim());
+if (geminiApiKeyPresent) {
   try {
     geminiClient = new GoogleGenAI({
-      apiKey: process.env.GEMINI_API_KEY,
+      apiKey: process.env.GEMINI_API_KEY as string,
       httpOptions: {
         headers: {
           'User-Agent': 'aistudio-build',
@@ -94,6 +95,11 @@ if (process.env.GEMINI_API_KEY) {
   } catch (err) {
     console.error('Failed to initialize GoogleGenAI client:', err);
   }
+} else {
+  console.warn(
+    '[PayShield] GEMINI_API_KEY is not set in this runtime. Screenshot vision is disabled and every scan will use the conservative heuristics fallback. ' +
+      'On Vercel: Project Settings -> Environment Variables -> add GEMINI_API_KEY for Production/Preview/Development, then redeploy.',
+  );
 }
 
 // Forensic prompt instructions
@@ -160,6 +166,23 @@ app.post('/api/reconcile-bank', (req: Request, res: Response) => {
 // API endpoint: Get bank ledger transactions
 app.get('/api/bank-ledger', (_req: Request, res: Response) => {
   res.json({ transactions: mockBankLedger });
+});
+
+// API endpoint: Deployment diagnostics. Reports whether the server can see the
+// Gemini key (never the key itself) so a missing Vercel environment variable is
+// visible immediately instead of silently falling back to heuristics.
+app.get('/api/health', (_req: Request, res: Response) => {
+  res.json({
+    ok: true,
+    service: 'payshield',
+    runtime: process.env.VERCEL ? 'vercel' : 'node',
+    nodeVersion: process.version,
+    geminiConfigured: Boolean(geminiClient),
+    geminiKeySeen: geminiApiKeyPresent,
+    geminiModel,
+    vision: geminiClient ? 'gemini' : 'heuristics-fallback',
+    timestamp: new Date().toISOString(),
+  });
 });
 
 // API endpoint: Analyze screenshot
@@ -433,6 +456,7 @@ Return ONLY valid JSON matching this schema:
               resolution: 'Mobile Screen',
               isDuplicateScreenshot: isDuplicateImage || isDuplicateTxn,
               previousSeenDate: previousRecord ? previousRecord.firstSeenAt : undefined,
+              visionEngine: 'gemini',
             };
             if (!parsed.redFlags.some((f: string) => f.includes(detectedSoftware!))) {
               parsed.redFlags.push(`Image header contains '${detectedSoftware}' editing software tag`);
@@ -446,6 +470,7 @@ Return ONLY valid JSON matching this schema:
               resolution: 'Mobile Screen',
               isDuplicateScreenshot: isDuplicateImage || isDuplicateTxn,
               previousSeenDate: previousRecord ? previousRecord.firstSeenAt : undefined,
+              visionEngine: 'gemini',
             };
           }
 
@@ -801,6 +826,7 @@ function generateHeuristicForensics(options: {
       resolution: isKnownDemo ? '720 x 1280' : 'Not extracted',
       isDuplicateScreenshot: isDuplicateImage,
       previousSeenDate: undefined,
+      visionEngine: 'heuristics',
     },
     recommendation: verdict === 'GENUINE'
       ? 'This is a positive demo sample only. For a real payment, confirm the credit in your bank app or account statement.'
@@ -815,10 +841,16 @@ function generateHeuristicForensics(options: {
   };
 }
 
-// Mount Vite or serve static files
+// Mount Vite or serve static files.
+// The dev-server bootstrap below is only for local `npm run dev` / `npm start` runs.
+// Serverless hosts (Vercel, AWS Lambda) import this module as a function bundle instead.
 async function startServer() {
   if (process.env.NODE_ENV !== 'production') {
-    const { createServer: createViteServer } = await import('vite');
+    // Load Vite through a variable specifier on purpose: it keeps the bundler for
+    // serverless functions (Vercel's `@vercel/node`) from tracing Vite + esbuild
+    // (tens of MB) into the deployed function, since this branch never runs there.
+    const vitePackage = 'vite';
+    const { createServer: createViteServer } = await import(vitePackage);
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: 'spa',
@@ -839,8 +871,16 @@ async function startServer() {
 export { app };
 export default app;
 
-// Vercel imports this Express app as a serverless function; local production/dev runs listen here.
-if (process.env.VERCEL !== '1') {
+// Vercel/AWS Lambda import this Express app as a function bundle, so the file must
+// stay side-effect free there: only a real long-running Node process should listen.
+const isServerlessRuntime = Boolean(
+  process.env.VERCEL ||
+    process.env.AWS_LAMBDA_FUNCTION_NAME ||
+    process.env.NETLIFY ||
+    process.env.FUNCTIONS_WORKER_RUNTIME,
+);
+
+if (!isServerlessRuntime) {
   startServer().catch((err) => {
     console.error('Failed to start server:', err);
     process.exit(1);

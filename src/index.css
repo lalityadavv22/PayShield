@@ -366,6 +366,7 @@ button:focus-visible, a:focus-visible, input:focus-visible {
 .recommendation-icon svg { width: 14px; height: 14px; }
 .recommendation-row strong { display: block; margin: 1px 0 4px; color: #e4efe7; font-size: 11px; font-weight: 650; }
 .recommendation-row p { margin: 0; color: #aebdb3; font-size: 11px; line-height: 1.6; }
+.engine-note { margin: 10px 0 0; padding: 9px 11px; border: 1px dashed rgba(255, 208, 122, 0.24); border-radius: 9px; color: #d8c49a; background: rgba(255, 196, 92, 0.05); font-size: 10px; line-height: 1.6; }
 .report-metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
 .metric-card { display: flex; flex-direction: column; align-items: flex-start; min-width: 0; min-height: 86px; padding: 14px 15px 12px; border-radius: 13px; background: rgba(17, 25, 21, 0.87); }
 .metric-label { color: #9aa99f; font-size: 10px; }
