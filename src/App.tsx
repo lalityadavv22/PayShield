@@ -248,18 +248,20 @@ export default function App() {
 
         {report && (
           <section className="results-section" ref={resultsRef} aria-labelledby="results-title">
-            <div className="results-heading">
-              <h2 id="results-title">Here’s what we found</h2>
+            <ScrollReveal className="results-heading" delay={20}>
+              <h2 id="results-title">JEV scan results</h2>
               <button className="report-new-scan" type="button" onClick={handleReset}>
                 Check another <span>↗</span>
               </button>
-            </div>
+            </ScrollReveal>
             <JevResultView report={report} />
           </section>
         )}
       </main>
 
-      <DeveloperFooter />
+      <ScrollReveal className="footer-reveal" delay={60}>
+        <DeveloperFooter />
+      </ScrollReveal>
     </div>
   );
 }
